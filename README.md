@@ -45,7 +45,7 @@ For other emulators, or to install by hand, extract the zip into the emulator's 
 
 ## How it works
 
-The patch places small ARM64 routines in unused executable padding after `.text` (`main+0x3C46800`, after the space Lichii's built-in patches use) and branches to them from nine hook sites. Each hook reruns the instruction it replaced and jumps back.
+The patch places small ARM64 routines in unused executable padding after `.text` (`main+0x3C46C00`, past the space Lichii's built-in patches use, including its sound manager fix) and branches to them from nine hook sites. Each hook reruns the instruction it replaced and jumps back.
 
 Six more words set the size of the picture: `main+0x1202EE0` and `main+0x31F39F4` build the picture's size (`mov x8, #2560`, then `movk x8, #1440, lsl #32` for the height) and `main+0x31F3A00` the scene's (`#1920`, `#1080`), which is 3/4 of the picture. These are the same constants NX2navi (`wide_out` / `wide_scene`) and Hookshot patch.
 
