@@ -8,10 +8,10 @@ gets the same mapping. 1:1, 4:3 etc. views are untouched.
 
 The picture the game renders (2560x1440, scene 1920x1080) takes the screen's shape: 3440x1440,
 2560x1080, 3416x1440 (for 5120x2160) or 4096x1152 (32:9; 5120x1440 ran out of the game's render-target
-memory and crashed).
+memory and crashed), or 2304x1440 (16:10).
 Full-screen 2D (the 3840x2160 layout ortho, spread over the whole picture) is squeezed horizontally
-by (16/9)/target, so the HUD sits undistorted in a centred 16:9 area. Pre-rendered movies get the
-same centred 16:9 viewport.
+by (16/9)/target (vertically by target/(16/9) on a 16:10 screen), so the HUD sits undistorted in a
+centred 16:9 area. Pre-rendered movies get the same centred 16:9 viewport.
 
   python3 build.py                         # writes releases/<zip>.zip, each holding
                                            #   0400486024DEC000/<mod name>/exefs/<id>.ips
@@ -30,6 +30,7 @@ VARIANTS = {  # mod folder name -> (zip file name, target display aspect, pictur
     # 64:27 at the game's own height (whole multiples of 8), so the emulator's upscale to 5120x2160 stays sharp
     "Ultrawide 21x9 (5120x2160)": ("oot-ultrawide-21x9-5120x2160.zip", 5120 / 2160, 3416, 1440),
     "Super Ultrawide 32x9": ("oot-super-ultrawide-32x9.zip", 32 / 9, 4096, 1152),  # 5120x1440 crashed: out of render-target memory
+    "Widescreen 16x10": ("oot-16x10.zip", 16 / 10, 2304, 1440),  # Steam Deck: the game's height, fewer pixels than stock
 }
 NSO_HEADER_SIZE = 0x100
 CAVE_BASE = 0x3C46800  # zero executable padding after .text, up to 0x3C47000. Lichii's built-in
@@ -111,11 +112,11 @@ def fix_aspect(target, sa, wt, sp, sq, writeback=None):
             + [fcmp(sp, sq), b_pl(len(tail) + 1)] + tail)
 
 
-def squash_ui(squash):
-    """2D canvas matrix setup, after ldp q1, q4, [x2] (x2 = row-major projection, x0 = canvas): if it
-    is the full-screen 3840x2160 ortho, scale row 0 so the HUD fills the centre 16:9 of the frame.
-    FULL_FRAME_SCREENS are skipped: they must keep covering the whole frame."""
-    tail = [movz(16, squash & 0xFFFF), movk16(16, squash >> 16), dup_4s(17, 16), fmul_4s(1, 1, 17)]
+def squash_ui(row, squash):
+    """2D canvas matrix setup, after ldp q1, q4, [x2] (x2 = row-major projection, x0 = canvas; q1 = row 0,
+    q4 = row 1): if it is the full-screen 3840x2160 ortho, scale that row so the HUD fills the centre 16:9
+    of the frame. FULL_FRAME_SCREENS are skipped: they must keep covering the whole frame."""
+    tail = [movz(16, squash & 0xFFFF), movk16(16, squash >> 16), dup_4s(17, 16), fmul_4s(row, row, 17)]
     # every full-screen layout canvas is embedded in a UI screen at +0x1b8: compare that screen's vptr
     check_bg = [sub_x(17, 0, SCREEN_CANVAS), ldr_x(16, 17)]
     for i, vtable in enumerate(FULL_FRAME_SCREENS):
@@ -127,12 +128,14 @@ def squash_ui(squash):
              cmp_w(16, 17), b_ne(len(check_m11) + len(check_bg) + len(tail) + 1)] + check_m11 + check_bg + tail)
 
 
-def pillarbox_movie(margin):
-    """Movie layer draw, right after its full-render-target viewport (sead::Viewport at x29-40:
-    minX +8, maxX +16) is built: shrink it to the centre 16:9 of the frame."""
-    return [sub_x(16, 29, 40), ldr_s(16, 16, 8), ldr_s(17, 16, 16), fsub(18, 17, 16),
+def box_movie(margin, lo):
+    """Movie layer draw, right after its full-render-target viewport (sead::Viewport at x29-40: minX +8,
+    minY +12, maxX +16, maxY +20) is built: shrink it to the centre 16:9 of the frame, along x (lo = 8)
+    or y (lo = 12)."""
+    hi = lo + 8
+    return [sub_x(16, 29, 40), ldr_s(16, 16, lo), ldr_s(17, 16, hi), fsub(18, 17, 16),
             movz(17, margin & 0xFFFF), movk16(17, margin >> 16), fmov_sw(19, 17),
-            fmul(18, 18, 19), fadd(16, 16, 18), fsub(17, 17, 18), str_s(16, 16, 8), str_s(17, 16, 16),
+            fmul(18, 18, 19), fadd(16, 16, 18), fsub(17, 17, 18), str_s(16, 16, lo), str_s(17, 16, hi),
             ldp_x(9, 8, 19, 24)]
 
 
@@ -140,6 +143,12 @@ def hooks(aspect):
     """(hook offset, original word, cave body, return address) for a target display aspect.
     Scratch registers are ones the original code overwrites right after the hook (or w16/w17/v16-v19)."""
     target, squash = f32(aspect), (16 / 9) / aspect
+    # the HUD keeps its 16:9 shape: squeezed into the centre of a wider screen's width (canvas row 0,
+    # viewport x, speech bubble x = ndc x * 1920), or of a taller (16:10) screen's height (row 1, y, ndc y * 1080)
+    if squash <= 1:
+        row, viewport_lo, (anchor, anchor_word, half) = 1, 8, (0x020C2B0, 0x52A89E08, 1920)
+    else:
+        squash, row, viewport_lo, (anchor, anchor_word, half) = 1 / squash, 4, 12, (0x020C2B8, 0x52A890E8, 1080)
     return [
         # sead::PerspectiveProjection::doUpdateMatrix: ldp s0, s1, [x0, #172]
         (0x3485CC0, 0x2D558400, [ldp_s(0, 1, 0, 172)] + fix_aspect(target, 1, 16, 16, 17, writeback=0), 0x3485CC4),
@@ -150,12 +159,12 @@ def hooks(aspect):
         # render view setup: scvtf s1, w21 ; fdiv s1, s1, s2 (aspect = w / h), resumes after the fdiv
         (0x025D76C, 0x1E2202A1, [scvtf_sw(1, 21), fdiv(1, 1, 2)] + fix_aspect(target, 1, 16, 16, 17), 0x025D774),
         # 2D canvas: projection * view -> canvas matrices (main+0x774330)
-        (0x0774368, 0xAD401041, squash_ui(f32(squash)), 0x077436C),
+        (0x0774368, 0xAD401041, squash_ui(row, f32(squash)), 0x077436C),
         # pre-rendered movie layer draw (main+0x3B5C71C): ldp x9, x8, [x19, #24]
-        (0x3B5C758, 0xA941A269, pillarbox_movie(f32((1 - squash) / 2)), 0x3B5C75C),
-        # NPC speech bubble anchor (layout x = ndc x * 1920): mov w8, #1920.0 -> 1920 / squash, so the
-        # squeezed canvas puts the bubble back over its speaker
-        (0x020C2B0, 0x52A89E08, [movz(8, f32(1920 / squash) & 0xFFFF), movk16(8, f32(1920 / squash) >> 16)], 0x020C2B4),
+        (0x3B5C758, 0xA941A269, box_movie(f32((1 - squash) / 2), viewport_lo), 0x3B5C75C),
+        # NPC speech bubble anchor (layout x = ndc x * 1920, y = ndc y * 1080): mov w8, #1920.0 (or #1080.0)
+        # -> half / squash, so the squeezed canvas puts the bubble back over its speaker
+        (anchor, anchor_word, [movz(8, f32(half / squash) & 0xFFFF), movk16(8, f32(half / squash) >> 16)], anchor + 4),
         # graphics allocator setup: stp x8, x9, [sp, #16] stores the pool's initial size (x8). Doubled, as
         # Lichii PR #976's "Texture Pool x2" does: the wider picture's render targets ran the pool out when
         # an item was collected (a null target linked into a list, then an endless walk of it)
