@@ -33,9 +33,10 @@ VARIANTS = {  # mod folder name -> (zip file name, target display aspect, pictur
     "Widescreen 16x10": ("oot-16x10.zip", 16 / 10, 2304, 1440),  # Steam Deck: the game's height, fewer pixels than stock
 }
 NSO_HEADER_SIZE = 0x100
-CAVE_BASE = 0x3C46800  # zero executable padding after .text, up to 0x3C47000. Lichii's built-in
-# patches now use 0x3C46200..0x3C46494 (Dynamic FPS / FPS Unlock, texture pool, water steps,
-# photo mode); at 0x3C46400 the mod made Lichii skip Dynamic FPS, FPS Unlock and Photo Mode.
+CAVE_BASE = 0x3C46C00  # zero executable padding after .text, up to 0x3C47000. Lichii's built-in
+# patches use 0x3C46200..0x3C46494 (Dynamic FPS / FPS Unlock, texture pool, water steps,
+# photo mode) and, with Lichii PR #1289 (sound manager at 60 Hz), 0x3C46800..0x3C4687C;
+# a mod cave over any of them makes Lichii skip that built-in.
 
 
 def f32(x): return struct.unpack("<I", struct.pack("<f", x))[0]
